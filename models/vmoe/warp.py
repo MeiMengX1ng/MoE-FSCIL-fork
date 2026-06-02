@@ -4,12 +4,6 @@ import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
 
 
-def set_grad(var):
-    def hook(grad):
-        var.grad = grad
-    return hook
-
-
 def im2col(input_data, filter_h, filter_w, stride=1, pad=0):
     n, c, h, w = input_data.shape
     out_h = (h + 2 * pad - filter_h) // stride + 1
@@ -39,15 +33,15 @@ class WaRPModule(nn.Module):
         if self.weight.ndim != 2:
             co, ci, k1, k2 = self.weight.shape
             self.basis_coeff = nn.Parameter(torch.Tensor(co, ci * k1 * k2, 1, 1), requires_grad=True)
-            self.register_buffer("UT_forward_conv", torch.Tensor(ci * k1 * k2, ci, k1, k2))
-            self.register_buffer("UT_backward_conv", torch.Tensor(co, co, 1, 1))
+            self.register_buffer('UT_forward_conv', torch.Tensor(ci * k1 * k2, ci, k1, k2))
+            self.register_buffer('UT_backward_conv', torch.Tensor(co, co, 1, 1))
         else:
             self.basis_coeff = nn.Parameter(torch.Tensor(self.weight.shape), requires_grad=True)
-        self.register_buffer("forward_covariance", None)
-        self.register_buffer("basis_coefficients", torch.Tensor(self.weight.shape).reshape(self.weight.shape[0], -1))
-        self.register_buffer("coeff_mask", torch.zeros(self.basis_coeff.shape))
-        self.register_buffer("UT_forward", torch.eye(self.basis_coeff.shape[1]))
-        self.register_buffer("UT_backward", torch.eye(self.basis_coeff.shape[0]))
+        self.register_buffer('forward_covariance', None)
+        self.register_buffer('basis_coefficients', torch.Tensor(self.weight.shape).reshape(self.weight.shape[0], -1))
+        self.register_buffer('coeff_mask', torch.zeros(self.basis_coeff.shape))
+        self.register_buffer('UT_forward', torch.eye(self.basis_coeff.shape[1]))
+        self.register_buffer('UT_backward', torch.eye(self.basis_coeff.shape[0]))
         self.flag = True
 
 
@@ -58,9 +52,9 @@ class Conv2dWaRP(WaRPModule):
             setattr(self, attr, getattr(conv_layer, attr))
         self.batch_count = 0
 
-    def pre_forward(self, input):
+    def pre_forward(self, input_tensor):
         with torch.no_grad():
-            input_col = im2col_from_conv(input.clone(), self)
+            input_col = im2col_from_conv(input_tensor.clone(), self)
             return input_col.t() @ input_col
 
     def post_backward(self):
@@ -71,16 +65,17 @@ class Conv2dWaRP(WaRPModule):
                 self.forward_covariance = self.forward_cov
             self.batch_count += 1
 
-    def forward(self, input):
+    def forward(self, input_tensor):
         if not self.flag:
-            self.forward_cov = self.pre_forward(input)
+            self.forward_cov = self.pre_forward(input_tensor)
             if self.padding_mode == 'circular':
                 expanded_padding = ((self.padding[1] + 1) // 2, self.padding[1] // 2, (self.padding[0] + 1) // 2, self.padding[0] // 2)
-                return F.conv2d(F.pad(input, expanded_padding, mode='circular'), self.weight, self.bias, self.stride, _pair(0), self.dilation, self.groups)
-            return F.conv2d(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+                return F.conv2d(F.pad(input_tensor, expanded_padding, mode='circular'), self.weight, self.bias, self.stride, _pair(0), self.dilation, self.groups)
+            return F.conv2d(input_tensor, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
-        utx = F.conv2d(input, self.UT_forward_conv, None, self.stride, self.padding, self.dilation, self.groups)
-        autx = F.conv2d(utx, (self.basis_coeff * self.coeff_mask).clone().detach() + self.basis_coeff * (1 - self.coeff_mask), None, 1, 0)
+        utx = F.conv2d(input_tensor, self.UT_forward_conv, None, self.stride, self.padding, self.dilation, self.groups)
+        active_coeff = (self.basis_coeff * self.coeff_mask).clone().detach() + self.basis_coeff * (1 - self.coeff_mask)
+        autx = F.conv2d(utx, active_coeff, None, 1, 0)
         return F.conv2d(autx, self.UT_backward_conv, self.bias, 1, 0)
 
 
@@ -108,19 +103,40 @@ def _same_device(x_mask, x):
     return x_mask
 
 
+def _iter_warp_modules(model):
+    return [module for module in model.modules() if isinstance(module, WaRPModule)]
+
+
+def _infer_device(model):
+    return next(model.parameters()).device
+
+
+def _limited_batches(dataloader, max_batches):
+    for batch_idx, batch in enumerate(dataloader):
+        if max_batches is not None and batch_idx >= max_batches:
+            break
+        yield batch
+
+
 @torch.no_grad()
-def compute_warp_orthonormal_basis(model, dataloader):
-    warped = [module for module in model.modules() if isinstance(module, WaRPModule)]
+def compute_warp_orthonormal_basis(model, dataloader, max_batches=None):
+    warped = _iter_warp_modules(model)
+    if not warped:
+        return
+
+    device = _infer_device(model)
+    was_training = model.training
+    model.eval()
     for module in warped:
         module.flag = False
         module.forward_covariance = None
         module.batch_count = 0
 
-    for batch in dataloader:
-        images = batch[0].cuda()
+    for batch in _limited_batches(dataloader, max_batches):
+        images = batch[0].to(device, non_blocking=True)
         _ = model(images)
         for module in warped:
-            if hasattr(module, "post_backward"):
+            if hasattr(module, 'post_backward'):
                 module.post_backward()
 
     for module in warped:
@@ -139,13 +155,69 @@ def compute_warp_orthonormal_basis(model, dataloader):
         module.UT_backward = ut_backward
         module.basis_coefficients.data = coeff.data
         if module.weight.ndim != 2:
-            module.UT_forward_conv = vt.reshape(
-                vt.shape[0], module.weight.shape[1], module.weight.shape[2], module.weight.shape[3]
-            )
+            module.UT_forward_conv = vt.reshape(vt.shape[0], module.weight.shape[1], module.weight.shape[2], module.weight.shape[3])
             module.UT_backward_conv = ut_backward.t().reshape(module.weight.shape[0], module.weight.shape[0], 1, 1)
             module.basis_coeff.data = coeff.reshape(module.weight.shape[0], -1, 1, 1).data
         else:
             module.basis_coeff.data = coeff.data
+
+    model.train(was_training)
+
+
+def _flatten_importances(importances):
+    return torch.cat([tensor.reshape(-1) for tensor in importances])
+
+
+def _fraction_threshold(scores, keep_ratio):
+    keep_ratio = float(max(0.0, min(1.0, keep_ratio)))
+    if keep_ratio <= 0.0:
+        return torch.tensor(float('inf'), device=scores.device, dtype=scores.dtype)
+    if keep_ratio >= 1.0:
+        return torch.tensor(float('-inf'), device=scores.device, dtype=scores.dtype)
+    return torch.quantile(scores, 1.0 - keep_ratio)
+
+
+def identify_warp_importance(model, dataloader, loss_closure, keep_ratio, max_batches=None, zero_grad_fn=None):
+    warped = _iter_warp_modules(model)
+    if not warped:
+        return 0.0
+
+    prev_masks = {module: module.coeff_mask.data.clone() for module in warped}
+    for module in warped:
+        module.coeff_mask.data.zero_()
+
+    importances = {module: torch.zeros_like(module.basis_coeff.data) for module in warped}
+    used_batches = 0
+
+    for batch in _limited_batches(dataloader, max_batches):
+        images, labels = batch[:2]
+        if zero_grad_fn is not None:
+            zero_grad_fn()
+        loss = loss_closure(images, labels)
+        loss.backward()
+        for module in warped:
+            if module.basis_coeff.grad is not None:
+                importances[module] += module.basis_coeff.grad.detach().abs()
+        used_batches += 1
+
+    if zero_grad_fn is not None:
+        zero_grad_fn()
+
+    if used_batches == 0:
+        for module in warped:
+            module.coeff_mask.data.copy_(prev_masks[module])
+        return 0.0
+
+    threshold = _fraction_threshold(_flatten_importances(importances.values()), keep_ratio)
+    total_kept = 0.0
+    total_params = 0.0
+    for module in warped:
+        new_mask = (importances[module] >= threshold).to(dtype=module.coeff_mask.dtype)
+        module.coeff_mask.data = 1 - (1 - new_mask) * (1 - prev_masks[module])
+        total_kept += module.coeff_mask.data.sum().item()
+        total_params += module.coeff_mask.data.numel()
+
+    return total_kept / max(total_params, 1.0)
 
 
 def restore_warp_weights(model):

@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import CLIPVisionModel
 
 from .classifier import SessionDecoupledClassifier
+from .clip_loader import get_clip_encoder_layers, load_clip_vision_backbone
 from .lora import inject_lora_to_vit_encoder_layers
 from .router import SessionRoutingModule
 
@@ -20,9 +20,9 @@ class FrozenVisionBackbone(nn.Module):
         if args.backbone_type != 'clip_vit_b16':
             raise ValueError("VMOE currently supports only clip_vit_b16 as the classification backbone")
 
-        self.backbone = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch16")
+        self.backbone = load_clip_vision_backbone()
         self.lora_linear_layers = inject_lora_to_vit_encoder_layers(
-            self.backbone.vision_model.encoder.layers,
+            get_clip_encoder_layers(self.backbone),
             num_sessions=args.sessions,
             rank=args.lora_rank,
             alpha=args.lora_alpha,
@@ -92,11 +92,13 @@ class VMOENet(nn.Module):
 
     def _forward_mixed_sessions(self, x, session_ids):
         session_ids = session_ids.to(x.device)
-        logits = x.new_full((x.size(0), self.args.num_classes), float('-inf'))
+        logits = None
         for session in torch.unique(session_ids).tolist():
             mask = session_ids == int(session)
             features = self.encode(x[mask], session=int(session))
             session_logits = self.forward_with_features(features, int(session))
+            if logits is None:
+                logits = session_logits.new_full((x.size(0), self.args.num_classes), float('-inf'))
             logits[mask, :session_logits.size(1)] = session_logits
         return logits
 

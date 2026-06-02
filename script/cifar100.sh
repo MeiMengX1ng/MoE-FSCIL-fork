@@ -1,15 +1,23 @@
 echo "Train VMOE on CIFAR100"
+HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+export HF_ENDPOINT
+echo "Using HF_ENDPOINT=$HF_ENDPOINT"
 seed_num=1
-gpu_num=0
+gpu_num=2
 model_dir=""
 
 router_disc_type=msd
 router_feat_mode=frozen
 router_neighbor_k=5
 router_sample_n=5
+router_epochs_base=30
+router_epochs_new=10
+num_workers=16
 
 if [ "$router_disc_type" = "dsd" ]; then
     router_neighbor_k=10
+    router_epochs_new=100
+    num_workers=100
 fi
 
 python train.py -project vmoe \
@@ -29,18 +37,21 @@ python train.py -project vmoe \
         -aug_lambda_min 0.45 \
         -aug_lambda_max 0.75 \
         -gamma 0.1 \
-        -lr_base 0.1 \
-        -lr_new 0.1 \
+        -lr_base 0.01 \
+        -lr_new 0.01 \
         -decay 0.0005 \
-        -epochs_base 100 \
+        -epochs_base 20 \
         -epochs_new 20 \
         -schedule Milestone \
         -milestones 40 80 \
         -milestones_new 10 15 \
-        -batch_size_base 128 \
+        -router_epochs_base $router_epochs_base \
+        -router_epochs_new $router_epochs_new \
+        -batch_size_base 256 \
         -batch_size_new 0 \
-        -test_batch_size 100 \
+        -test_batch_size 256 \
         -temperature 16 \
+        -num_workers $num_workers \
         -start_session 0 \
         -gpu $gpu_num \
         -seed $seed_num

@@ -2,6 +2,22 @@ import numpy as np
 import torch
 from dataloader.sampler import CategoriesSampler
 
+
+def _make_loader(dataset, batch_size=None, shuffle=False, batch_sampler=None, num_workers=8, pin_memory=True):
+    loader_kwargs = {
+        'dataset': dataset,
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+    }
+    if batch_sampler is not None:
+        loader_kwargs['batch_sampler'] = batch_sampler
+    else:
+        loader_kwargs['batch_size'] = batch_size
+        loader_kwargs['shuffle'] = shuffle
+    if num_workers > 0:
+        loader_kwargs['persistent_workers'] = True
+    return torch.utils.data.DataLoader(**loader_kwargs)
+
 def set_up_datasets(args):
     if args.dataset == 'cifar100':
         import dataloader.cifar100.cifar as Dataset
@@ -55,10 +71,20 @@ def get_base_dataloader(args):
         testset = args.Dataset.MiniImageNet(root=args.dataroot, train=False, index=class_index)
 
 
-    trainloader = torch.utils.data.DataLoader(dataset=trainset, batch_size=args.batch_size_base, shuffle=True,
-                                              num_workers=8, pin_memory=True)
-    testloader = torch.utils.data.DataLoader(
-        dataset=testset, batch_size=args.test_batch_size, shuffle=False, num_workers=8, pin_memory=True)
+    trainloader = _make_loader(
+        trainset,
+        batch_size=args.batch_size_base,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+    testloader = _make_loader(
+        testset,
+        batch_size=args.test_batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
 
     return trainset, trainloader, testloader
 
@@ -89,11 +115,20 @@ def get_base_dataloader_meta(args):
     sampler = CategoriesSampler(trainset.targets, args.train_episode, args.episode_way,
                                 args.episode_shot + args.episode_query)
 
-    trainloader = torch.utils.data.DataLoader(dataset=trainset, batch_sampler=sampler, num_workers=args.num_workers,
-                                              pin_memory=True)
+    trainloader = _make_loader(
+        trainset,
+        batch_sampler=sampler,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
 
-    testloader = torch.utils.data.DataLoader(
-        dataset=testset, batch_size=args.test_batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    testloader = _make_loader(
+        testset,
+        batch_size=args.test_batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
 
     return trainset, trainloader, testloader
 
@@ -111,11 +146,21 @@ def get_new_dataloader(args,session):
                                        index_path=txt_path)
     if args.batch_size_new == 0:
         batch_size_new = trainset.__len__()
-        trainloader = torch.utils.data.DataLoader(dataset=trainset, batch_size=batch_size_new, shuffle=False,
-                                                  num_workers=args.num_workers, pin_memory=True)
+        trainloader = _make_loader(
+            trainset,
+            batch_size=batch_size_new,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+        )
     else:
-        trainloader = torch.utils.data.DataLoader(dataset=trainset, batch_size=args.batch_size_new, shuffle=True,
-                                                  num_workers=args.num_workers, pin_memory=True)
+        trainloader = _make_loader(
+            trainset,
+            batch_size=args.batch_size_new,
+            shuffle=True,
+            num_workers=args.num_workers,
+            pin_memory=True,
+        )
 
     # test on all encountered classes
     class_new = get_session_classes(args, session)
@@ -130,8 +175,13 @@ def get_new_dataloader(args,session):
         testset = args.Dataset.MiniImageNet(root=args.dataroot, train=False,
                                       index=class_new)
 
-    testloader = torch.utils.data.DataLoader(dataset=testset, batch_size=args.test_batch_size, shuffle=False,
-                                             num_workers=args.num_workers, pin_memory=True)
+    testloader = _make_loader(
+        testset,
+        batch_size=args.test_batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
 
     return trainset, trainloader, testloader
 

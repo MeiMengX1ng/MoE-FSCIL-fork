@@ -1,4 +1,7 @@
 echo "Train VMOE on CUB200"
+HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+export HF_ENDPOINT
+echo "Using HF_ENDPOINT=$HF_ENDPOINT"
 seed_num=1
 gpu_num=0
 model_dir=""
@@ -7,6 +10,9 @@ router_disc_type=msd
 router_feat_mode=frozen
 router_neighbor_k=5
 router_sample_n=5
+router_epochs_base=40
+router_epochs_new=10
+num_workers=16
 
 if [ "$router_disc_type" = "dsd" ]; then
     router_neighbor_k=10
@@ -37,10 +43,13 @@ python train.py -project vmoe \
         -schedule Milestone \
         -milestones 30 60 90 \
         -milestones_new 10 15 \
+        -router_epochs_base $router_epochs_base \
+        -router_epochs_new $router_epochs_new \
         -batch_size_base 128 \
         -batch_size_new 0 \
         -test_batch_size 100 \
         -temperature 16 \
+        -num_workers $num_workers \
         -start_session 0 \
         -gpu $gpu_num \
         -seed $seed_num

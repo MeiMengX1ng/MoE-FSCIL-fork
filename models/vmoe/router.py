@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import ResNet18_Weights, resnet18
 
-from .warp import compute_warp_orthonormal_basis, restore_warp_weights, switch_warp_modules
+from .warp import compute_warp_orthonormal_basis, identify_warp_importance, restore_warp_weights, switch_warp_modules, WaRPModule
 
 
 class ResNet18FeatureExtractor(nn.Module):
@@ -32,6 +32,8 @@ class ResNet18FeatureExtractor(nn.Module):
 
 
 class FrozenResNet18Extractor(nn.Module):
+    uses_warp = False
+
     def __init__(self, args):
         super().__init__()
         self.image_size = args.model_image_size
@@ -44,21 +46,49 @@ class FrozenResNet18Extractor(nn.Module):
             x = F.interpolate(x, size=(self.image_size, self.image_size), mode='bilinear', align_corners=False)
         return self.encoder(x)
 
+    def trainable_parameters(self):
+        return []
+
 
 class WaRPResNet18Extractor(nn.Module):
+    uses_warp = True
+
     def __init__(self, args):
         super().__init__()
         self.image_size = args.model_image_size
         base_encoder = ResNet18FeatureExtractor(pretrained=True)
         self.encoder = switch_warp_modules(base_encoder)
 
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+        for module in self.encoder.modules():
+            if isinstance(module, WaRPModule):
+                module.basis_coeff.requires_grad = True
+
     def forward(self, x):
         if x.shape[-1] != self.image_size or x.shape[-2] != self.image_size:
             x = F.interpolate(x, size=(self.image_size, self.image_size), mode='bilinear', align_corners=False)
         return self.encoder(x)
 
-    def compute_basis(self, dataloader):
-        compute_warp_orthonormal_basis(self.encoder, dataloader)
+    def trainable_parameters(self):
+        params = []
+        for module in self.encoder.modules():
+            if isinstance(module, WaRPModule):
+                params.append(module.basis_coeff)
+        return params
+
+    def compute_basis(self, dataloader, max_batches=None):
+        compute_warp_orthonormal_basis(self.encoder, dataloader, max_batches=max_batches)
+
+    def identify_importance(self, dataloader, loss_closure, keep_ratio, max_batches=None, zero_grad_fn=None):
+        return identify_warp_importance(
+            self.encoder,
+            dataloader,
+            loss_closure,
+            keep_ratio=keep_ratio,
+            max_batches=max_batches,
+            zero_grad_fn=zero_grad_fn,
+        )
 
     def restore_weights(self):
         restore_warp_weights(self.encoder)
@@ -71,17 +101,18 @@ class MemoryBankSessionDiscriminator(nn.Module):
         self.projector = nn.Sequential(
             nn.Linear(feat_dim * 2, feat_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(feat_dim, max_sessions),
+            nn.Linear(feat_dim, 1),
         )
         self.memory_bank = {}
 
     def update_memory(self, session_id, class_prototypes):
         self.memory_bank[int(session_id)] = {int(k): v.detach().clone() for k, v in class_prototypes.items()}
 
-    def forward(self, features, active_sessions):
+    def forward(self, features, active_sessions, session_memory_overrides=None):
+        session_memory_overrides = session_memory_overrides or {}
         pooled = []
         for session_id in range(active_sessions + 1):
-            session_memory = self.memory_bank.get(session_id, {})
+            session_memory = session_memory_overrides.get(session_id, self.memory_bank.get(session_id, {}))
             if session_memory:
                 pooled.append(torch.stack(list(session_memory.values()), dim=0).mean(dim=0))
             else:
@@ -90,7 +121,7 @@ class MemoryBankSessionDiscriminator(nn.Module):
         pooled = pooled.unsqueeze(0).expand(features.size(0), -1, -1)
         features = features.unsqueeze(1).expand_as(pooled)
         fused = torch.cat([features, pooled], dim=-1)
-        logits = self.projector(fused).mean(dim=1)
+        logits = self.projector(fused).squeeze(-1)
         return logits[:, :active_sessions + 1]
 
 

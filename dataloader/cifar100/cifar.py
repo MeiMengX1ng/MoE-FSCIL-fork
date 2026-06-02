@@ -10,6 +10,10 @@ import torchvision.transforms as transforms
 from torchvision.datasets.vision import VisionDataset
 from torchvision.datasets.utils import check_integrity, download_and_extract_archive
 
+CLIP_IMAGE_SIZE = 224
+CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073]
+CLIP_STD = [0.26862954, 0.26130258, 0.27577711]
+
 
 class CIFAR10(VisionDataset):
     """`CIFAR10 <https://www.cs.toronto.edu/~kriz/cifar.html>`_ Dataset.
@@ -72,16 +76,18 @@ class CIFAR10(VisionDataset):
         if self.train:
             downloaded_list = self.train_list
             self.transform = transforms.Compose([
-                transforms.RandomCrop(32, padding=4),
+                transforms.Resize(CLIP_IMAGE_SIZE),
+                transforms.RandomCrop(CLIP_IMAGE_SIZE, padding=28),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.507, 0.487, 0.441], std=[0.267, 0.256, 0.276])
+                transforms.Normalize(mean=CLIP_MEAN, std=CLIP_STD)
             ])
         else:
             downloaded_list = self.test_list
             self.transform = transforms.Compose([
+                transforms.Resize(CLIP_IMAGE_SIZE),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.507, 0.487, 0.441], std=[0.267, 0.256, 0.276])
+                transforms.Normalize(mean=CLIP_MEAN, std=CLIP_STD)
             ])
 
         self.data = []
@@ -118,11 +124,11 @@ class CIFAR10(VisionDataset):
         self._load_meta()
 
     def SelectfromDefault(self, data, targets, index):
-        data_tmp = []
-        targets_tmp = []
+        data_tmp = None
+        targets_tmp = None
         for i in index:
             ind_cl = np.where(i == targets)[0]
-            if data_tmp == []:
+            if data_tmp is None:
                 data_tmp = data[ind_cl]
                 targets_tmp = targets[ind_cl]
             else:
@@ -132,14 +138,14 @@ class CIFAR10(VisionDataset):
         return data_tmp, targets_tmp
 
     def NewClassSelector(self, data, targets, index):
-        data_tmp = []
-        targets_tmp = []
+        data_tmp = None
+        targets_tmp = None
         ind_list = [int(i) for i in index]
         ind_np = np.array(ind_list)
         index = ind_np.reshape((5,5))
         for i in index:
             ind_cl = i
-            if data_tmp == []:
+            if data_tmp is None:
                 data_tmp = data[ind_cl]
                 targets_tmp = targets[ind_cl]
             else:

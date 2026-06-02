@@ -72,10 +72,15 @@ def get_command_line_parser():
     parser.add_argument('-router_neighbor_k', type=int, default=5)
     parser.add_argument('-router_sample_n', type=int, default=5)
     parser.add_argument('-milestones_new', nargs='+', type=int, default=[10, 15])
+    parser.add_argument('-router_epochs_base', type=int, default=30)
+    parser.add_argument('-router_epochs_new', type=int, default=10)
+    parser.add_argument('-fraction_to_keep', type=float, default=0.1)
+    parser.add_argument('-warp_basis_max_batches', type=int, default=20)
+    parser.add_argument('-warp_importance_max_batches', type=int, default=20)
 
     # about training
     parser.add_argument('-gpu', default='0,1,2,3')
-    parser.add_argument('-num_workers', type=int, default=8)
+    parser.add_argument('-num_workers', type=int, default=16)
     parser.add_argument('-seed', type=int, default=1)
     parser.add_argument('-debug', action='store_true')
 
