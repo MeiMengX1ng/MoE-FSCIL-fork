@@ -1,0 +1,152 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from models.resnet18_encoder import resnet18
+from .warp import compute_warp_orthonormal_basis, restore_warp_weights, switch_warp_modules
+
+
+class FrozenResNet18Extractor(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.image_size = args.model_image_size
+        self.encoder = resnet18(False, args)
+        if args.router_model_dir is not None:
+            state = torch.load(args.router_model_dir)
+            state = state.get('params', state)
+            self.encoder.load_state_dict(state, strict=False)
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+
+    def forward(self, x):
+        if x.shape[-1] != self.image_size or x.shape[-2] != self.image_size:
+            x = F.interpolate(x, size=(self.image_size, self.image_size), mode='bilinear', align_corners=False)
+        return self.encoder(x)
+
+
+class WaRPResNet18Extractor(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.image_size = args.model_image_size
+        base_encoder = resnet18(False, args)
+        if args.router_model_dir is not None:
+            state = torch.load(args.router_model_dir)
+            state = state.get('params', state)
+            base_encoder.load_state_dict(state, strict=False)
+        self.encoder = switch_warp_modules(base_encoder)
+
+    def forward(self, x):
+        if x.shape[-1] != self.image_size or x.shape[-2] != self.image_size:
+            x = F.interpolate(x, size=(self.image_size, self.image_size), mode='bilinear', align_corners=False)
+        return self.encoder(x)
+
+    def compute_basis(self, dataloader):
+        compute_warp_orthonormal_basis(self.encoder, dataloader)
+
+    def restore_weights(self):
+        restore_warp_weights(self.encoder)
+
+
+class MemoryBankSessionDiscriminator(nn.Module):
+    def __init__(self, feat_dim, max_sessions):
+        super().__init__()
+        self.max_sessions = max_sessions
+        self.projector = nn.Sequential(
+            nn.Linear(feat_dim * 2, feat_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feat_dim, max_sessions),
+        )
+        self.memory_bank = {}
+
+    def update_memory(self, session_id, class_prototypes):
+        self.memory_bank[int(session_id)] = {int(k): v.detach().clone() for k, v in class_prototypes.items()}
+
+    def forward(self, features, active_sessions):
+        pooled = []
+        for session_id in range(active_sessions + 1):
+            session_memory = self.memory_bank.get(session_id, {})
+            if session_memory:
+                pooled.append(torch.stack(list(session_memory.values()), dim=0).mean(dim=0))
+            else:
+                pooled.append(features.new_zeros(features.size(-1)))
+        pooled = torch.stack(pooled, dim=0)
+        pooled = pooled.unsqueeze(0).expand(features.size(0), -1, -1)
+        features = features.unsqueeze(1).expand_as(pooled)
+        fused = torch.cat([features, pooled], dim=-1)
+        logits = self.projector(fused).mean(dim=1)
+        return logits[:, :active_sessions + 1]
+
+
+class SessionAutoEncoder(nn.Module):
+    def __init__(self, feat_dim, bottleneck_dim=256):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(feat_dim, bottleneck_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(bottleneck_dim, bottleneck_dim // 2),
+            nn.ReLU(inplace=True),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(bottleneck_dim // 2, bottleneck_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(bottleneck_dim, feat_dim),
+        )
+
+    def forward(self, x):
+        return self.decoder(self.encoder(x))
+
+
+class DistributionSessionDiscriminator(nn.Module):
+    def __init__(self, feat_dim, max_sessions, bottleneck_dim=256):
+        super().__init__()
+        self.autoencoders = nn.ModuleList(
+            SessionAutoEncoder(feat_dim, bottleneck_dim=bottleneck_dim)
+            for _ in range(max_sessions)
+        )
+
+    def forward(self, features, active_sessions):
+        errors = []
+        for session_id in range(active_sessions + 1):
+            recon = self.autoencoders[session_id](features)
+            errors.append((features - recon).pow(2).mean(dim=-1))
+        return torch.stack(errors, dim=-1)
+
+    def predict_session(self, features, active_sessions):
+        errors = self.forward(features, active_sessions)
+        return torch.argmin(errors, dim=-1)
+
+
+class SessionRoutingModule(nn.Module):
+    def __init__(self, args, max_sessions):
+        super().__init__()
+        self.args = args
+        self.max_sessions = max_sessions
+        if args.router_feat_mode == 'warp':
+            self.feature_extractor = WaRPResNet18Extractor(args)
+        else:
+            self.feature_extractor = FrozenResNet18Extractor(args)
+
+        self.route_feat_dim = 512
+        if args.router_disc_type == 'dsd':
+            self.discriminator = DistributionSessionDiscriminator(
+                feat_dim=self.route_feat_dim,
+                max_sessions=max_sessions,
+                bottleneck_dim=args.router_bottleneck_dim,
+            )
+        else:
+            self.discriminator = MemoryBankSessionDiscriminator(
+                feat_dim=self.route_feat_dim,
+                max_sessions=max_sessions,
+            )
+
+    def extract_route_features(self, x):
+        feat_map = self.feature_extractor(x)
+        pooled = F.adaptive_avg_pool2d(feat_map, 1).flatten(1)
+        return feat_map, pooled
+
+    def forward(self, x, active_sessions):
+        _, pooled = self.extract_route_features(x)
+        if self.args.router_disc_type == 'dsd':
+            return self.discriminator.predict_session(pooled, active_sessions)
+        logits = self.discriminator(pooled, active_sessions)
+        return torch.argmax(logits, dim=-1)

@@ -34,9 +34,9 @@ def get_command_line_parser():
     parser.add_argument('-batch_size_new', type=int, default=0, help='set 0 will use all the availiable training image for new')
     parser.add_argument('-test_batch_size', type=int, default=100)
     parser.add_argument('-base_mode', type=str, default='ft_cos',
-                        choices=['ft_dot', 'ft_cos']) # ft_dot means using linear classifier, ft_cos means using cosine classifier
+                        choices=['ft_dot', 'ft_cos'])
     parser.add_argument('-new_mode', type=str, default='avg_cos',
-                        choices=['ft_dot', 'ft_cos', 'avg_cos']) # ft_dot means using linear classifier, ft_cos means using cosine classifier, avg_cos means using average data embedding and cosine classifier
+                        choices=['ft_dot', 'ft_cos', 'avg_cos'])
 
     # for episode learning
     parser.add_argument('-train_episode', type=int, default=50)
@@ -52,6 +52,28 @@ def get_command_line_parser():
     parser.add_argument('-start_session', type=int, default=0)
     parser.add_argument('-model_dir', type=str, default=MODEL_DIR, help='loading model parameter from a specific dir')
     parser.add_argument('-set_no_val', action='store_true', help='set validation using test set or no validation')
+
+    parser.add_argument('-backbone_type', type=str, default='clip_vit_b16',
+                        choices=['clip_vit_b16', 'resnet18'])
+    parser.add_argument('-backbone_feat_dim', type=int, default=768)
+    parser.add_argument('-model_image_size', type=int, default=224)
+    parser.add_argument('-backbone_model_dir', type=str, default=None)
+    parser.add_argument('-router_disc_type', type=str, default='msd',
+                        choices=['msd', 'dsd'])
+    parser.add_argument('-router_feat_mode', type=str, default='frozen',
+                        choices=['frozen', 'warp'])
+    parser.add_argument('-router_bottleneck_dim', type=int, default=256)
+    parser.add_argument('-router_loss_weight', type=float, default=1.0)
+    parser.add_argument('-router_model_dir', type=str, default=None)
+    parser.add_argument('-lora_rank', type=int, default=8)
+    parser.add_argument('-lora_alpha', type=float, default=16.0)
+    parser.add_argument('-lambda_cross', type=float, default=0.8)
+    parser.add_argument('-lambda_ortho', type=float, default=1.0)
+    parser.add_argument('-aug_lambda_min', type=float, default=0.45)
+    parser.add_argument('-aug_lambda_max', type=float, default=0.75)
+    parser.add_argument('-router_neighbor_k', type=int, default=5)
+    parser.add_argument('-router_sample_n', type=int, default=5)
+    parser.add_argument('-milestones_new', nargs='+', type=int, default=[10, 15])
 
     # about training
     parser.add_argument('-gpu', default='0,1,2,3')
