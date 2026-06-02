@@ -1,20 +1,41 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.models import ResNet18_Weights, resnet18
 
-from models.resnet18_encoder import resnet18
 from .warp import compute_warp_orthonormal_basis, restore_warp_weights, switch_warp_modules
+
+
+class ResNet18FeatureExtractor(nn.Module):
+    def __init__(self, pretrained=True):
+        super().__init__()
+        weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        model = resnet18(weights=weights)
+        self.stem = nn.Sequential(
+            model.conv1,
+            model.bn1,
+            model.relu,
+            model.maxpool,
+        )
+        self.layer1 = model.layer1
+        self.layer2 = model.layer2
+        self.layer3 = model.layer3
+        self.layer4 = model.layer4
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        return x
 
 
 class FrozenResNet18Extractor(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.image_size = args.model_image_size
-        self.encoder = resnet18(False, args)
-        if args.router_model_dir is not None:
-            state = torch.load(args.router_model_dir)
-            state = state.get('params', state)
-            self.encoder.load_state_dict(state, strict=False)
+        self.encoder = ResNet18FeatureExtractor(pretrained=True)
         for param in self.encoder.parameters():
             param.requires_grad = False
 
@@ -28,11 +49,7 @@ class WaRPResNet18Extractor(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.image_size = args.model_image_size
-        base_encoder = resnet18(False, args)
-        if args.router_model_dir is not None:
-            state = torch.load(args.router_model_dir)
-            state = state.get('params', state)
-            base_encoder.load_state_dict(state, strict=False)
+        base_encoder = ResNet18FeatureExtractor(pretrained=True)
         self.encoder = switch_warp_modules(base_encoder)
 
     def forward(self, x):

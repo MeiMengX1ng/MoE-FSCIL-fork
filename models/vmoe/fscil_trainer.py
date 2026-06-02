@@ -19,7 +19,7 @@ class FSCILTrainer(Trainer):
         self.set_save_path()
         self.model = nn.DataParallel(VMOENet(self.args, mode=self.args.base_mode), list(range(self.args.num_gpu))).cuda()
         if self.args.model_dir is not None:
-            checkpoint = torch.load(self.args.model_dir)
+            checkpoint = torch.load(self.args.model_dir, map_location='cpu')
             self.best_model_dict = checkpoint['params']
             self.model.load_state_dict(self.best_model_dict, strict=False)
             self._load_extra_state(checkpoint.get('extra_state', {}))
@@ -27,20 +27,17 @@ class FSCILTrainer(Trainer):
             self.best_model_dict = deepcopy(self.model.state_dict())
 
     def set_save_path(self):
-        mode = (
-            f"{self.args.backbone_type}-"
-            f"{self.args.router_disc_type}-"
-            f"{self.args.router_feat_mode}-"
-            f"r{self.args.lora_rank}-a{self.args.lora_alpha:.1f}"
+        checkpoint_root = '/data/xuzg/FSCIL/MoE-FSCIL/checkpoint'
+        router_tag = f"{self.args.router_disc_type}-routerpt"
+        lora_tag = f"lora_r{self.args.lora_rank}_a{self.args.lora_alpha:.1f}"
+        ortho_tag = (
+            f"ortho_b{self.args.lambda_ortho_base:g}_"
+            f"n{self.args.lambda_ortho_new:g}_"
+            f"cross{self.args.lambda_cross:g}"
         )
-        sched = (
-            f"EpoB_{self.args.epochs_base}-EpoN_{self.args.epochs_new}-"
-            f"LrB_{self.args.lr_base:.4f}-LrN_{self.args.lr_new:.4f}-"
-            f"MSB_{'_'.join(str(x) for x in self.args.milestones)}-"
-            f"MSN_{'_'.join(str(x) for x in self.args.milestones_new)}-"
-            f"T_{self.args.temperature:.2f}-seed_{self.args.seed}"
-        )
-        self.args.save_path = os.path.join('checkpoint', self.args.dataset, self.args.project, mode, sched)
+        mode_tag = 'moe-moe-data_init-start_0'
+        run_name = f"{router_tag}-{lora_tag}-{ortho_tag}-{mode_tag}"
+        self.args.save_path = os.path.join(checkpoint_root, self.args.dataset, self.args.project, run_name)
         ensure_path(self.args.save_path)
 
     def _extra_state(self):

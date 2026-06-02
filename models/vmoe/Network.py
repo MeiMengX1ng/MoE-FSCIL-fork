@@ -1,15 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers import CLIPVisionModel
 
-try:
-    from torchvision.models import vit_b_16
-except Exception:  # pragma: no cover
-    vit_b_16 = None
-
-from models.resnet18_encoder import resnet18
 from .classifier import SessionDecoupledClassifier
-from .lora import MultiSessionLoRA, LoRALinear, inject_lora_to_linear_layers
+from .lora import inject_lora_to_vit_encoder_layers
 from .router import SessionRoutingModule
 
 
@@ -18,30 +13,20 @@ class FrozenVisionBackbone(nn.Module):
         super().__init__()
         self.args = args
         self.image_size = args.model_image_size
-        self.out_dim = args.backbone_feat_dim
-        self.kind = 'resnet'
+        self.out_dim = 768
+        self.kind = 'vit'
         self.lora_linear_layers = []
 
-        if args.backbone_type == 'clip_vit_b16' and vit_b_16 is not None:
-            vit = vit_b_16(weights=None)
-            self.backbone = vit
-            self.out_dim = 768
-            self.kind = 'vit'
-            self.lora_linear_layers = inject_lora_to_linear_layers(
-                self.backbone.encoder.layers,
-                num_sessions=args.sessions,
-                rank=args.lora_rank,
-                alpha=args.lora_alpha,
-                exclude_names={'head', 'heads'},
-            )
-        else:
-            self.backbone = resnet18(False, args)
-            self.out_dim = 512
+        if args.backbone_type != 'clip_vit_b16':
+            raise ValueError("VMOE currently supports only clip_vit_b16 as the classification backbone")
 
-        if args.backbone_model_dir is not None:
-            state = torch.load(args.backbone_model_dir)
-            state = state.get('params', state)
-            self.backbone.load_state_dict(state, strict=False)
+        self.backbone = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch16")
+        self.lora_linear_layers = inject_lora_to_vit_encoder_layers(
+            self.backbone.vision_model.encoder.layers,
+            num_sessions=args.sessions,
+            rank=args.lora_rank,
+            alpha=args.lora_alpha,
+        )
 
         for param in self.backbone.parameters():
             param.requires_grad = False
@@ -62,17 +47,10 @@ class FrozenVisionBackbone(nn.Module):
     def forward(self, x):
         if x.shape[-1] != self.image_size or x.shape[-2] != self.image_size:
             x = F.interpolate(x, size=(self.image_size, self.image_size), mode='bilinear', align_corners=False)
-        if self.kind == 'vit':
-            x = self.backbone._process_input(x)
-            n = x.shape[0]
-            batch_class_token = self.backbone.class_token.expand(n, -1, -1)
-            x = torch.cat([batch_class_token, x], dim=1)
-            x = self.backbone.encoder(x)
-            return x[:, 0]
-
-        feat = self.backbone(x)
-        feat = F.adaptive_avg_pool2d(feat, 1).flatten(1)
-        return feat
+        outputs = self.backbone(pixel_values=x)
+        if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
+            return outputs.pooler_output
+        return outputs.last_hidden_state[:, 0, :]
 
 
 class VMOENet(nn.Module):
@@ -82,16 +60,7 @@ class VMOENet(nn.Module):
         self.mode = mode or args.base_mode
         self.backbone = FrozenVisionBackbone(args)
         self.num_features = self.backbone.out_dim
-        self.use_backbone_lora = self.backbone.kind == 'vit'
-        self.lora = None
-        if not self.use_backbone_lora:
-            self.lora = MultiSessionLoRA(
-                self.num_features,
-                self.num_features,
-                num_sessions=args.sessions,
-                rank=args.lora_rank,
-                alpha=args.lora_alpha,
-            )
+        self.use_backbone_lora = True
         self.classifier = SessionDecoupledClassifier(
             feat_dim=self.num_features,
             num_classes=args.num_classes,
@@ -114,12 +83,9 @@ class VMOENet(nn.Module):
         return torch.tensor(self.get_session_class_ids(session), dtype=torch.long, device=self.classifier.heads[0].weight.device)
 
     def encode(self, x, session=None):
-        if self.use_backbone_lora:
-            self.backbone.set_active_session(session)
+        self.backbone.set_active_session(session)
         base_feat = self.backbone(x)
-        if session is None or self.use_backbone_lora:
-            return base_feat
-        return base_feat + self.lora(base_feat, session)
+        return base_feat
 
     def forward_with_features(self, features, session):
         return self.classifier(features, session, self.args.base_class, self.args.way)

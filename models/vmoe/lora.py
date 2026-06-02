@@ -100,3 +100,18 @@ def inject_lora_to_linear_layers(module, num_sessions, rank=8, alpha=1.0, exclud
                 )
             )
     return wrapped
+
+
+def inject_lora_to_vit_encoder_layers(encoder_layers, num_sessions, rank=8, alpha=1.0):
+    wrapped = []
+    for _, block in encoder_layers.named_children():
+        if hasattr(block, 'mlp') and hasattr(block.mlp, 'fc1') and hasattr(block.mlp, 'fc2'):
+            if isinstance(block.mlp.fc1, nn.Linear):
+                lora_fc1 = LoRALinear(block.mlp.fc1, num_sessions=num_sessions, rank=rank, alpha=alpha)
+                block.mlp.fc1 = lora_fc1
+                wrapped.append(lora_fc1)
+            if isinstance(block.mlp.fc2, nn.Linear):
+                lora_fc2 = LoRALinear(block.mlp.fc2, num_sessions=num_sessions, rank=rank, alpha=alpha)
+                block.mlp.fc2 = lora_fc2
+                wrapped.append(lora_fc2)
+    return wrapped

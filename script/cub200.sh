@@ -1,13 +1,12 @@
 echo "Train VMOE on CUB200"
 seed_num=1
 gpu_num=0
+model_dir=""
 
 router_disc_type=msd
 router_feat_mode=frozen
 router_neighbor_k=5
 router_sample_n=5
-backbone_model_dir=""
-router_model_dir=""
 
 if [ "$router_disc_type" = "dsd" ]; then
     router_neighbor_k=10
@@ -19,10 +18,9 @@ python train.py -project vmoe \
         -new_mode ft_cos \
         -backbone_type clip_vit_b16 \
         -model_image_size 224 \
-        ${backbone_model_dir:+-backbone_model_dir $backbone_model_dir} \
+        ${model_dir:+-model_dir $model_dir} \
         -router_disc_type $router_disc_type \
         -router_feat_mode $router_feat_mode \
-        ${router_model_dir:+-router_model_dir $router_model_dir} \
         -router_neighbor_k $router_neighbor_k \
         -router_sample_n $router_sample_n \
         -lora_rank 8 \

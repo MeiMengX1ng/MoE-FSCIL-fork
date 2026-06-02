@@ -27,6 +27,8 @@ def run_epoch(model, loader, optimizer, scheduler, epoch, args, session, train=T
     context = torch.enable_grad() if train else torch.no_grad()
     class_ids = model.module.get_session_class_ids(session)
 
+    ortho_weight = args.lambda_ortho_base if session == 0 else args.lambda_ortho_new
+
     with context:
         iterator = tqdm(loader)
         for batch in iterator:
@@ -34,19 +36,19 @@ def run_epoch(model, loader, optimizer, scheduler, epoch, args, session, train=T
             features = model.module.encode(images, session)
             _, route_features = model.module.router.extract_route_features(images)
 
-            prototypes = build_class_prototypes(features.detach(), labels, class_ids)
-            aug_features, aug_labels = prototype_nearest_neighbor_augment(
-                features,
+            route_prototypes = build_class_prototypes(route_features.detach(), labels, class_ids)
+            aug_route_features, aug_labels = prototype_nearest_neighbor_augment(
+                route_features,
                 labels,
-                prototypes,
+                route_prototypes,
                 k=args.router_neighbor_k,
                 sample_n=args.router_sample_n,
                 lambda_min=args.aug_lambda_min,
                 lambda_max=args.aug_lambda_max,
             )
 
-            logits = model.module.forward_with_features(aug_features, session)
-            ce_loss = F.cross_entropy(logits[:, :model.module.seen_classes(session)], aug_labels)
+            logits = model.module.forward_with_features(features, session)
+            ce_loss = F.cross_entropy(logits[:, :model.module.seen_classes(session)], labels)
             ortho_loss = model.module.classifier.orthogonality_loss(
                 session,
                 model.module.get_session_class_mask(session),
@@ -54,15 +56,15 @@ def run_epoch(model, loader, optimizer, scheduler, epoch, args, session, train=T
                 lambda_cross=args.lambda_cross,
             )
             if args.router_disc_type == 'msd':
-                route_logits = model.module.router.discriminator(route_features.detach(), session)
-                route_target = labels.new_full((route_features.size(0),), session)
+                route_logits = model.module.router.discriminator(aug_route_features.detach(), session)
+                route_target = labels.new_full((aug_route_features.size(0),), session)
                 route_loss = F.cross_entropy(route_logits, route_target)
             else:
-                recon = model.module.router.discriminator.autoencoders[session](route_features.detach())
-                route_loss = F.mse_loss(recon, route_features.detach())
+                recon = model.module.router.discriminator.autoencoders[session](aug_route_features.detach())
+                route_loss = F.mse_loss(recon, aug_route_features.detach())
 
-            loss = ce_loss + args.lambda_ortho * ortho_loss + args.router_loss_weight * route_loss
-            acc = count_acc(logits[:, :model.module.seen_classes(session)], aug_labels)
+            loss = ce_loss + ortho_weight * ortho_loss + args.router_loss_weight * route_loss
+            acc = count_acc(logits[:, :model.module.seen_classes(session)], labels)
 
             if train:
                 optimizer.zero_grad()

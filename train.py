@@ -54,21 +54,19 @@ def get_command_line_parser():
     parser.add_argument('-set_no_val', action='store_true', help='set validation using test set or no validation')
 
     parser.add_argument('-backbone_type', type=str, default='clip_vit_b16',
-                        choices=['clip_vit_b16', 'resnet18'])
-    parser.add_argument('-backbone_feat_dim', type=int, default=768)
+                        choices=['clip_vit_b16'])
     parser.add_argument('-model_image_size', type=int, default=224)
-    parser.add_argument('-backbone_model_dir', type=str, default=None)
     parser.add_argument('-router_disc_type', type=str, default='msd',
                         choices=['msd', 'dsd'])
     parser.add_argument('-router_feat_mode', type=str, default='frozen',
                         choices=['frozen', 'warp'])
     parser.add_argument('-router_bottleneck_dim', type=int, default=256)
     parser.add_argument('-router_loss_weight', type=float, default=1.0)
-    parser.add_argument('-router_model_dir', type=str, default=None)
     parser.add_argument('-lora_rank', type=int, default=8)
-    parser.add_argument('-lora_alpha', type=float, default=16.0)
+    parser.add_argument('-lora_alpha', type=float, default=8.0)
     parser.add_argument('-lambda_cross', type=float, default=0.8)
-    parser.add_argument('-lambda_ortho', type=float, default=1.0)
+    parser.add_argument('-lambda_ortho_base', type=float, default=0.01)
+    parser.add_argument('-lambda_ortho_new', type=float, default=0.05)
     parser.add_argument('-aug_lambda_min', type=float, default=0.45)
     parser.add_argument('-aug_lambda_max', type=float, default=0.75)
     parser.add_argument('-router_neighbor_k', type=int, default=5)
